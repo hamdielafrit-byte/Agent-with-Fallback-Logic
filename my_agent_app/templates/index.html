@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Chat</title>
+    <style>
+        :root {
+            --bg-color: #131314;
+            --chat-bg: #131314;
+            --text-main: #e3e3e3;
+            --text-sub: #b4b4b4;
+            --input-bg: #1e1e1f;
+            --input-border: #3c4043;
+            --badge-bg: #2d2f31;
+            
+            --accent-direct: #4af;
+            --accent-tool: #4ade80;
+            --accent-fallback: #f87171;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .main-chat {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            background-color: var(--chat-bg);
+            position: relative;
+        }
+
+        .chat-thread {
+            flex: 1;
+            overflow-y: auto;
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 32px;
+        }
+
+        .message-row {
+            max-width: 800px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            gap: 20px;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background-color: #444746;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .user-row .avatar {
+            background-color: #642b8f;
+        }
+
+        .agent-row .avatar {
+            background: linear-gradient(135deg, #1fa2ff, #12d6df);
+        }
+
+        .message-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .sender-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-sub);
+        }
+
+        .message-text {
+            font-size: 16px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .route-tag {
+            align-self: flex-start;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background-color: var(--badge-bg);
+            color: var(--text-sub);
+            border: 1px solid var(--input-border);
+            letter-spacing: 0.5px;
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        .route-direct { color: var(--accent-direct); border-color: var(--accent-direct); }
+        .route-tool { color: var(--accent-tool); border-color: var(--accent-tool); }
+        .route-fallback { color: var(--accent-fallback); border-color: var(--accent-fallback); }
+
+        .input-area {
+            max-width: 800px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 0 20px 24px 20px;
+            box-sizing: border-box;
+        }
+
+        .input-wrapper {
+            background-color: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 24px;
+            display: flex;
+            align-items: flex-end; /* Keeps send button aligned bottom when textbox expands */
+            padding: 10px 14px 10px 24px;
+            transition: border-color 0.2s;
+        }
+
+        .input-wrapper:focus-within {
+            border-color: #8e918f;
+        }
+
+        /* Swapped out traditional input for a flexible textarea */
+        textarea {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-main);
+            font-size: 16px;
+            padding: 4px 0;
+            outline: none;
+            resize: none;
+            font-family: inherit;
+            max-height: 200px;
+            line-height: 1.5;
+        }
+
+        textarea::placeholder {
+            color: #80868b;
+        }
+
+        button {
+            background-color: var(--text-main);
+            color: #000;
+            border: none;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-weight: bold;
+            transition: opacity 0.2s;
+            flex-shrink: 0;
+            margin-left: 12px;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button:disabled {
+            background-color: #2f3032;
+            color: #606366;
+            cursor: not-allowed;
+        }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #3c4043; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<div class="main-chat">
+    <div class="chat-thread" id="chatThread">
+        <div class="message-row agent-row">
+            <div class="avatar">AI</div>
+            <div class="message-content">
+                <div class="sender-name">Your AI Buddy</div>
+                <div class="message-text">Hey there! Always good to see you. 😊 What's on your mind today? I'm ready to hang out and chat, plus I've got a built-in calculator and web search tool if we need to look anything up or crunch some numbers!</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="input-area">
+        <div class="input-wrapper">
+            <textarea id="queryInput" placeholder="Message Agent Buddy..." rows="1" autocomplete="off"></textarea>
+            <button id="sendBtn">➔</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const chatThread = document.getElementById('chatThread');
+    const queryInput = document.getElementById('queryInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    // FEATURE 1: Automatic textarea growth tracking height mutations
+    queryInput.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = (this.scrollHeight - 8) + 'px'; // Dynamic adjustment based on text lines
+    });
+
+    // FEATURE 2: Enter key shortcuts vs Linebreak management
+    queryInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault(); // Stop a raw physical new line from forming
+            submitQuery();
+        }
+    });
+
+    async function submitQuery() {
+        const query = queryInput.value.trim();
+        if (!query) return;
+
+        // Immediately reset input height and clean text fields
+        queryInput.value = '';
+        queryInput.style.height = 'auto';
+        sendBtn.disabled = true;
+
+        appendMessage('User', query, 'user-row');
+        
+        // Show temporary thinking loop element
+        const thinkingId = appendMessage('Your AI Buddy', 'Thinking...', 'agent-row');
+        chatThread.scrollTop = chatThread.scrollHeight;
+
+        try {
+            const response = await fetch('/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query })
+            });
+            
+            const data = await response.json();
+            
+            document.getElementById(thinkingId).remove();
+            
+            // Build permanent message node container shell
+            const responseId = appendMessage('Your AI Buddy', '', 'agent-row', data.route);
+            const targetTextBlock = document.querySelector(`#${responseId} .message-text`);
+            
+            // FEATURE 3: Word-by-word simulated animation sequence
+            await typeOutText(targetTextBlock, data.response);
+
+        } catch (error) {
+            document.getElementById(thinkingId).remove();
+            appendMessage('Your AI Buddy', 'Failed to communicate with your local agent server.', 'agent-row', 'Error');
+        } finally {
+            sendBtn.disabled = false;
+            chatThread.scrollTop = chatThread.scrollHeight;
+        }
+    }
+
+    function appendMessage(sender, text, rowClass, route = null) {
+        const messageId = 'msg-' + Date.now() + Math.random().toString(36).substr(2, 4);
+        const row = document.createElement('div');
+        row.className = `message-row ${rowClass}`;
+        row.id = messageId;
+
+        const isUser = rowClass.includes('user-row');
+        const avatarText = isUser ? 'U' : 'AI';
+
+        let routeBadgeHtml = '';
+        if (route) {
+            let badgeModifier = '';
+            if (route.includes('Fallback')) badgeModifier = 'route-fallback';
+            else if (route.includes('Tool')) badgeModifier = 'route-tool';
+            else if (route.includes('Direct')) badgeModifier = 'route-direct';
+
+            routeBadgeHtml = `<div class="route-tag ${badgeModifier}">${route}</div>`;
+        }
+
+        row.innerHTML = `
+            <div class="avatar">${avatarText}</div>
+            <div class="message-content">
+                <div class="sender-name">${sender}</div>
+                ${routeBadgeHtml}
+                <div class="message-text">${text}</div>
+            </div>
+        `;
+
+        chatThread.appendChild(row);
+        return messageId;
+    }
+
+    // Dynamic typewriter processing engine split by word boundaries
+    function typeOutText(element, totalText) {
+        return new Promise((resolve) => {
+            const words = totalText.split(' ');
+            let index = 0;
+            element.innerText = '';
+
+            function printNextWord() {
+                if (index < words.length) {
+                    // Reassemble strings while matching spaces seamlessly
+                    element.innerText += (index === 0 ? '' : ' ') + words[index];
+                    index++;
+                    chatThread.scrollTop = chatThread.scrollHeight; // Keep view lock scrolled down
+                    setTimeout(printNextWord, 45); // Speed multiplier per word print (in milliseconds)
+                } else {
+                    resolve();
+                }
+            }
+            printNextWord();
+        });
+    }
+
+    sendBtn.addEventListener('click', submitQuery);
+</script>
+
+</body>
+</html>
