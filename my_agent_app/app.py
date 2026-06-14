@@ -1,15 +1,16 @@
 from flask import Flask, render_template, request, jsonify
-from duckduckgo_search import DDGS  # Real live web search engine
+from duckduckgo_search import DDGS 
 import json
 import math
 import ollama
 
 app = Flask(__name__)
 
-# --- In-Memory Chat History ---
+# --- Advanced Memory Repositories ---
 CHAT_HISTORY = []
+LONG_TERM_FACTS = []  # Acts as our long-term memory graph/fact index
 
-# --- Real Tools Definition ---
+# --- Tools Definition ---
 def calculator_tool(expression: str) -> str:
     allowed_chars = "0123456789+-*/(). sqrt"
     if not all(c in allowed_chars for c in expression):
@@ -19,37 +20,62 @@ def calculator_tool(expression: str) -> str:
     return str(result)
 
 def search_tool(query: str) -> str:
-    """Connects your agent directly to the live internet via DuckDuckGo."""
-    # Kept intact so you can still explicitly test your 404 fallback logic!
     if "404" in query.lower():
         raise RuntimeError("Search API returned a 404 Error: Service Unavailable.")
-    
     try:
-        # Fetch the top 3 live text results from the web
         with DDGS() as ddgs:
             results = [r for r in ddgs.text(query, max_results=3)]
-        
         if not results:
             return "No live web results found."
-            
-        # Format the live web snippets into a single text block
         context = ""
         for i, r in enumerate(results, 1):
             context += f"Source {i}: {r['title']} - {r['body']}\n"
         return context
-        
     except Exception as e:
-        # If internet is down or search rate-limits us, raise error to kick off the fallback route smoothly
         raise RuntimeError(f"Live web search failed: {str(e)}")
 
 
-# --- Agent Core with Speed Optimizations & Memory ---
+# --- Agent Core with Memory Optimization ---
 class SmartAgent:
     def __init__(self, model_name: str = "qwen2.5:3b"):
         self.model_name = model_name
         
+    def _update_long_term_memory(self, history: list):
+        """Condenses oldest messages into facts to keep VRAM usage low."""
+        global LONG_TERM_FACTS
+        # Only extract facts if history is growing long to preserve speed
+        if len(history) <= 4:
+            return
+            
+        # Extract the messages that are falling out of the sliding window
+        old_exchange = history[:-4]
+        text_to_summarize = ""
+        for msg in old_exchange:
+            text_to_summarize += f"{msg['role']}: {msg['content']}\n"
+            
+        system_instruction = (
+            "You are a memory condensation system. Extract critical, permanent facts about the user "
+            "(names, preferences, favorites, background info) from the text. Respond ONLY with a bulleted "
+            "list of new facts, or reply 'None' if no critical personal facts are found."
+        )
+        
+        try:
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": f"Existing Facts:\n{LONG_TERM_FACTS}\n\nNew Thread:\n{text_to_summarize}"}
+                ],
+                options={"temperature": 0.0, "num_predict": 100}
+            )
+            new_facts = response['message']['content'].strip()
+            if "none" not in new_facts.lower():
+                # Store the updated facts smoothly
+                LONG_TERM_FACTS.append(new_facts)
+        except Exception:
+            pass # Fail gracefully in the background
+
     def _route_input(self, user_prompt: str, history: list) -> dict:
-        """Routes input swiftly by capping token generation and context limits."""
         system_instruction = (
             "You are an AI router. Analyze the user prompt and the recent chat history to decide the best action.\n"
             "If the user is asking about current events, news, weather, or real-time web facts, route to 'search'.\n"
@@ -61,7 +87,7 @@ class SmartAgent:
         )
         
         messages = [{"role": "system", "content": system_instruction}]
-        for msg in history[-4:]: # Only pass the last 4 messages to save context processing time
+        for msg in history[-4:]: 
             messages.append({"role": msg["role"], "content": msg["content"]})
         messages.append({"role": "user", "content": user_prompt})
 
@@ -69,11 +95,7 @@ class SmartAgent:
             response = ollama.chat(
                 model=self.model_name,
                 messages=messages,
-                options={
-                    "temperature": 0.0,
-                    "num_predict": 40,   # Capped generation: stops immediately after JSON is output
-                    "num_ctx": 2048,     # Small context window for faster token routing
-                }
+                options={"temperature": 0.0, "num_predict": 40, "num_ctx": 2048}
             )
             content = response['message']['content'].strip()
             if content.startswith("```json"):
@@ -85,31 +107,24 @@ class SmartAgent:
             return {"action": "direct_reasoning", "tool_input": ""}
 
     def _direct_llm_answer(self, user_prompt: str, history: list, context: str = "") -> str:
-        """Generates an answer using a sliding history window and injected live context."""
         messages = []
         
-        # ─── UPDATED SYSTEM PROMPTS TO FORCE MEMORY RECOGNITION ───
+        # Inject our consolidated long term facts into the system instruction
+        facts_str = "\n".join(LONG_TERM_FACTS) if LONG_TERM_FACTS else "None yet."
+        
+        system_content = (
+            "You are a friendly, helpful AI buddy. Chat naturally with the user.\n"
+            "CRITICAL: You have access to the chat history and long-term knowledge graphs.\n"
+            f"KNOWN PERMANENT FACTS ABOUT USER:\n{facts_str}\n\n"
+            "If the user references something old, use the facts above to remember seamlessly!"
+        )
+        
         if context:
-            messages.append({
-                "role": "system", 
-                "content": (
-                    "You are a friendly AI buddy. Answer the user's prompt using this live internet context data:\n"
-                    f"{context}\n"
-                    "Note: You HAVE access to the history below. Never say you don't remember."
-                )
-            })
-        else:
-            messages.append({
-                "role": "system", 
-                "content": (
-                    "You are a friendly, helpful AI buddy. Chat naturally with the user.\n"
-                    "CRITICAL: You HAVE full access to the recent chat history provided below. "
-                    "If the user asks you what you talked about, what their name is, or what they said earlier, "
-                    "look at the history logs below and answer accurately. Never claim you don't have memory."
-                )
-            })
+            system_content += f"\n\nUse this live internet context data to answer current info queries:\n{context}"
             
-        # Sliding history window to keep generation fast and lean
+        messages.append({"role": "system", "content": system_content})
+            
+        # Recent sliding window to prevent high text stack overhead
         for msg in history[-4:]: 
             messages.append({"role": msg["role"], "content": msg["content"]})
             
@@ -118,13 +133,14 @@ class SmartAgent:
         response = ollama.chat(
             model=self.model_name, 
             messages=messages,
-            options={
-                "num_ctx": 4096  
-            }
+            options={"num_ctx": 4096}
         )
         return response['message']['content']
 
     def handle_query(self, user_prompt: str, history: list) -> tuple[str, str]:
+        # Update our condensed background facts right before routing
+        self._update_long_term_memory(history)
+        
         decision = self._route_input(user_prompt, history)
         action = decision.get("action", "direct_reasoning")
         tool_input = decision.get("tool_input", "")
@@ -142,7 +158,6 @@ class SmartAgent:
         elif action == "search":
             try:
                 search_data = search_tool(tool_input)
-                # Confidence Fallback Check (If data returned is suspiciously empty)
                 if len(search_data.strip()) < 10:
                     return "Fallback Route (Low Tool Confidence)", self._direct_llm_answer(user_prompt, history)
                 
@@ -152,7 +167,7 @@ class SmartAgent:
 
         return "Error", "Unknown state."
 
-# Instantiate Agent (Using qwen2.5:3b as default since it is fast and efficient)
+# Instantiate Agent
 agent = SmartAgent(model_name="qwen2.5:3b")
 
 # --- Flask Routes ---
